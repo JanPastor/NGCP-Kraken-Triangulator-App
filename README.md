@@ -85,3 +85,11 @@ KRAKEN_API_URL=http://<kraken-ip-address>:8080 python server/kraken_server.py
 $env:KRAKEN_API_URL="http://<kraken-ip-address>:8080"
 python server/kraken_server.py
 ```
+
+
+---
+
+## License
+
+This is Free and Open Source Software (FOSS) developed for the **Northrop Grumman Collaboration Project** (NGCP). 
+It is distributed under the [MIT License](LICENSE).

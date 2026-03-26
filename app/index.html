@@ -77,10 +77,18 @@
                 <span class="pb-label">DATA PLAYBACK</span>
             </div>
             <div class="pb-center">
-                <button class="pb-btn" id="pb-reset" title="Reset to start">&#9198;</button>
-                <button class="pb-btn" id="pb-rewind" title="Previous waypoint">&#9194;</button>
-                <button class="pb-btn pb-btn-main" id="pb-playpause" title="Play / Pause">&#9654;</button>
-                <button class="pb-btn" id="pb-forward" title="Next waypoint">&#9193;</button>
+                <button class="pb-btn" id="pb-reset" title="Reset to start">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+                </button>
+                <button class="pb-btn" id="pb-rewind" title="Previous waypoint">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:14px;height:14px;"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg>
+                </button>
+                <button class="pb-btn pb-btn-main" id="pb-playpause" title="Play / Pause">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                </button>
+                <button class="pb-btn" id="pb-forward" title="Next waypoint">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:14px;height:14px;"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>
+                </button>
             </div>
             <div class="pb-progress">
                 <span class="pb-pos" id="pb-pos-label">1 / 6</span>
@@ -148,12 +156,12 @@
                                         <input type="checkbox" id="btn-draw-mask-toggle" style="width:14px; height:14px;">
                                         Draw Area
                                     </label>
-                                    <button class="btn-secondary btn-icon-text" id="btn-clear-mask" style="padding:2px 8px; font-size:0.65rem; color:var(--accent-red); border-color:rgba(255,77,106,0.2);">
-                                        <span style="font-weight:bold; margin-right:4px;">✕</span> Clear
+                                    <button class="btn-secondary btn-icon-text" id="btn-clear-mask" style="padding:4px 8px; font-size:0.65rem; color:var(--text-secondary);">
+                                        Clear
                                     </button>
                                 </div>
 
-                                <div style="display:flex; justify-content:space-between; margin-bottom: 12px; gap:8px;">
+                                <div id="mask-tools-block" style="display:flex; justify-content:space-between; margin-bottom: 12px; gap:8px; transition: opacity 0.3s;">
                                     <label class="setting-row-compact" style="flex:1;">
                                         <span class="setting-label-tiny">Width (E-W)</span>
                                         <div style="display:flex; align-items:center; gap:4px;">
@@ -170,19 +178,32 @@
                                     </label>
                                 </div>
 
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; opacity:0.5; pointer-events:none;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                                     <label style="display:flex; align-items:center; gap:8px; font-size:0.75rem; cursor:pointer; color:var(--text-secondary);">
                                         <input type="checkbox" id="btn-draw-poly-toggle" style="width:14px; height:14px;">
                                         Draw Polygon
                                     </label>
-                                    <button class="btn-secondary btn-icon-text" id="btn-clear-poly" style="padding:2px 8px; font-size:0.65rem; color:var(--accent-red); border-color:rgba(255,77,106,0.2);">
-                                        <span style="font-weight:bold; margin-right:4px;">✕</span> Clear Poly
+                                    <button class="btn-secondary btn-icon-text" id="btn-clear-poly" style="padding:4px 8px; font-size:0.65rem; color:var(--text-secondary);">
+                                        Clear Poly
                                     </button>
                                 </div>
+                                <div id="poly-tools-block" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px; transition: opacity 0.3s;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <label for="poly-vertices" class="setting-label-tiny" style="margin:0; font-weight:700;">Vertices (N)</label>
+                                        <input type="number" id="poly-vertices" min="5" max="20" value="6" class="setting-input-tiny" style="width:60px; text-align:center;">
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <label for="poly-color" class="setting-label-tiny" style="margin:0; font-weight:700;">Color</label>
+                                        <input type="color" id="poly-color" value="#fa8231" style="width:24px; height:24px; padding:0; border:none; background:none; cursor:pointer;">
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <label for="poly-lock" style="font-size:0.75rem; font-weight:700; color:var(--text-secondary); display:flex; gap:6px; align-items:center;">Lock Shape (Movable)</label>
+                                        <input type="checkbox" id="poly-lock" style="width:14px; height:14px;">
+                                    </div>
+                                </div>
 
-                                <button class="btn-secondary" id="btn-clear-all-overlays" style="width:100%; margin-top:8px; border-color:rgba(255,77,106,0.4); color:var(--accent-red); background:rgba(255,77,106,0.05); text-transform:uppercase; font-size:0.7rem; font-weight:700; letter-spacing:0.05em; display:flex; align-items:center; justify-content:center; gap:8px;">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px; height:14px;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                                    Clear All Overlays
+                                <button class="btn-secondary" id="btn-clear-all-overlays" style="width:100%; margin-top:8px; display:flex; justify-content:center; align-items:center;">
+                                    CLEAR ALL OVERLAYS
                                 </button>
                                 
                                 <input type="checkbox" id="mask-lock" style="display:none;">
@@ -363,14 +384,17 @@
                     <div class="settings-section">
                         <h2>About</h2>
                         <p class="about-text">
-                            KrakenSDR Triangulator v0.2.0<br>
+                            KrakenSDR Triangulator v0.3.0<br>
                             NGCP Pixhawk ↔ Pi 5 Companion — Commander Laptop Tool<br>
                             Built for verifying KrakenSDR DOA bearing estimates.
                         </p>
                     </div>
 
                     <div class="settings-section" style="border-top: 1px solid #444; padding-top: 20px; margin-top: 10px;">
-                        <button id="btn-shutdown" class="btn-secondary" style="width: 100%; border-color: #e74c3c; color: #ff6b81; font-weight: bold; background: rgba(231,76,60,0.1); cursor: pointer;" title="Terminates the backend Python tracking server and closes this browser tab.">🛑 SHUTDOWN SERVER & QUIT</button>
+                        <button id="btn-shutdown" class="btn-secondary" style="width: 100%; border-color: #e74c3c; color: #ff6b81; font-weight: bold; background: rgba(231,76,60,0.1); cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 8px;" title="Terminates the backend Python tracking server and closes this browser tab.">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px; height:16px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
+                            SHUTDOWN SERVER & QUIT
+                        </button>
                     </div>
                 </div>
             </div>

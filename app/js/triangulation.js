@@ -293,13 +293,51 @@ const Triangulation = (() => {
     }
 
     /**
+     * Standard Point-in-Polygon (Raycasting)
+     */
+    function pointInPolygon2D(pt, poly) {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i].E, yi = poly[i].N;
+            const xj = poly[j].E, yj = poly[j].N;
+            const intersect = ((yi > pt.y) !== (yj > pt.y)) && 
+                              (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    /**
+     * 2D Ray-Segment Intersection
+     */
+    function raySegmentIntersect2D(origin, dir, p1, p2) {
+        // ray: O + t * D
+        // seg: p1 + u * (p2 - p1)
+        const dx = dir.x, dy = dir.y;
+        const vx = p2.E - p1.E, vy = p2.N - p1.N;
+        const wx = p1.E - origin.x, wy = p1.N - origin.y;
+        
+        // Cramer's rule determinant
+        const det = vx * dy - vy * dx;
+        if (Math.abs(det) < 1e-6) return false;
+        
+        // parameter 't' along the ray, 'u' along the segment bounds
+        const t = (vx * wy - vy * wx) / det;
+        const u = (dx * wy - dy * wx) / det;
+        
+        // t >= 0: intersection is strictly forward extending from the sensor
+        // 0 <= u <= 1: intersection lands exactly between the two polygon vertices
+        return (t >= 0 && u >= 0 && u <= 1);
+    }
+
+    /**
      * Apply geometric and numeric filters before doing LS-AoA
      */
     function filterStations(stations, config) {
         if (!stations || stations.length < 1) return stations;
         let filtered = [...stations];
 
-        // 1. Spatial Area Geofencing (AABB Raycasting)
+        // 1A. Spatial Box Geofencing (AABB Raycasting)
         // config.aabb = { minLat, maxLat, minLon, maxLon }
         if (config.filterSpatial && config.aabb) {
             const { minLat, maxLat, minLon, maxLon } = config.aabb;
@@ -320,6 +358,32 @@ const Triangulation = (() => {
                 const boxMax = { x: Math.max(bMin.E, bMax.E), y: Math.max(bMin.N, bMax.N) };
                 
                 return rayAABBIntersect({ x: origin.E, y: origin.N }, dir, boxMin, boxMax);
+            });
+        }
+
+        // 1B. Spatial Polygon Geofencing (N-sided Polygon Intersection)
+        if (config.filterPoly && config.polyBounds && config.polyBounds.length > 2) {
+            const refLat = config.polyBounds[0].lat;
+            const refLon = config.polyBounds[0].lon;
+            
+            const polyENU = config.polyBounds.map(p => latLonToENU(p.lat, p.lon, refLat, refLon));
+            
+            filtered = filtered.filter(st => {
+                const origin = latLonToENU(st.lat, st.lon, refLat, refLon);
+                const theta = (90 - st.bearing_deg) * DEG2RAD;
+                const dir = { x: Math.cos(theta), y: Math.sin(theta) };
+                const oPt = { x: origin.E, y: origin.N };
+                
+                // If station is physically inside the polygon, it automatically intersects bounds.
+                if (pointInPolygon2D(oPt, polyENU)) return true;
+                
+                // Otherwise, check if the ray crosses any polygon edge segment.
+                for (let i = 0, j = polyENU.length - 1; i < polyENU.length; j = i++) {
+                    if (raySegmentIntersect2D(oPt, dir, polyENU[j], polyENU[i])) {
+                        return true;
+                    }
+                }
+                return false;
             });
         }
 

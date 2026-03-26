@@ -46,6 +46,13 @@ const MapView = (() => {
     let _maskCenterMarker = null;
     let _maskColor = '#9b59b6';
 
+    // Polygon variables
+    let _polyLayer = null;
+    let _polyPoints = [];
+    let _polyPolygon = null;
+    let _polyCenterMarker = null;
+    let _polyColor = '#fa8231';
+    let _polyIsLocked = false;
     window.saveCustomMarkerName = function(id, newName) {
         const obj = _customMarkers.find(o => o.id === id);
         if (obj && newName.trim() !== '') {
@@ -166,6 +173,8 @@ const MapView = (() => {
     }
 
     // Mask API
+    let _cancelDrawingFn = null;
+
     window.drawDefaultMask = function(widthMeters = null, heightMeters = null, colorHex = '#00e87a') {
         if (_maskPolygon) return;
         
@@ -221,7 +230,19 @@ const MapView = (() => {
                     { lat: bounds.getSouth(), lon: bounds.getWest(), role: 'SW' }
                 ];
                 _constructMaskMarkers(pts);
+                
+                _cancelDrawingFn = null;
             };
+            
+            _cancelDrawingFn = () => {
+                if (drawingRect) _map.removeLayer(drawingRect);
+                _map.getContainer().style.cursor = '';
+                _map.dragging.enable();
+                _map.off('mousedown', onMouseDown);
+                _map.off('mousemove', onMouseMove);
+                _map.off('mouseup', onMouseUp);
+                _cancelDrawingFn = null;
+            }
             
             _map.on('mousedown', onMouseDown);
             _map.on('mousemove', onMouseMove);
@@ -250,6 +271,7 @@ const MapView = (() => {
     };
 
     window.clearMask = function() {
+        if (_cancelDrawingFn) _cancelDrawingFn();
         _maskPoints = [];
         _maskCenterMarker = null;
         _maskLayer.clearLayers();
@@ -291,6 +313,157 @@ const MapView = (() => {
         }
         if (window._triggerAppUpdate) window._triggerAppUpdate();
     }
+
+    // ── Polygon API ──
+    window.drawPolygonMask = function(numVertices = 6, colorHex = '#fa8231', forceCenter = null) {
+        let center = forceCenter;
+        if (!center) {
+            if (_polyCenterMarker) center = _polyCenterMarker.getLatLng();
+            else center = _map.getCenter();
+        }
+        
+        if (_polyPolygon) window.clearPoly();
+        _polyColor = colorHex;
+        
+        // Initial spawn logic (equally spaced vertices in a circle around center)
+        const pts = [];
+        const radiusM = 50; // default size
+        
+        for (let i = 0; i < numVertices; i++) {
+            const angleDeg = (i * 360) / numVertices;
+            const pt = TriangulationHelpers.projectPoint(center.lat, center.lng, angleDeg, radiusM);
+            pts.push({ lat: pt.lat, lon: pt.lon });
+        }
+        
+        _constructPolyMarkers(pts);
+    };
+
+    function _constructPolyMarkers(pts) {
+        if (!_polyLayer) _polyLayer = L.layerGroup().addTo(_map);
+        window.clearPoly();
+        
+        const centerHtml = `<div style="width:100%; height:100%; background:${_polyColor}; border:2px solid #fff; box-sizing:border-box; box-shadow:0 0 6px rgba(0,0,0,0.5); border-radius:2px; cursor:move;"></div>`;
+        const centerIcon = L.divIcon({ className: '', html: centerHtml, iconSize: [14, 14], iconAnchor: [7, 7] });
+        
+        const vertexHtml = `<div style="width:100%; height:100%; background:#fff; border:2px solid ${_polyColor}; box-sizing:border-box; border-radius:2px; box-shadow:0 0 4px rgba(0,0,0,0.5); cursor:move;"></div>`;
+        const vertexIcon = L.divIcon({ className: '', html: vertexHtml, iconSize: [12, 12], iconAnchor: [6, 6] });
+
+        
+        const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lon]));
+        const c = bounds.getCenter();
+        
+        _polyCenterMarker = L.marker(c, { icon: centerIcon, draggable: true, zIndexOffset: 1000 }).addTo(_polyLayer);
+        // Hide centroid initially unless locked
+        if (!_polyIsLocked) _polyCenterMarker.getElement()?.style.setProperty('display', 'none', 'important');
+        
+        let lastCenterLat = c.lat;
+        let lastCenterLng = c.lng;
+        
+        _polyCenterMarker.on('drag', (e) => {
+            const ll = e.target.getLatLng();
+            const dLat = ll.lat - lastCenterLat;
+            const dLng = ll.lng - lastCenterLng;
+            
+            _polyPoints.forEach(m => {
+                const ml = m.getLatLng();
+                m.setLatLng([ml.lat + dLat, ml.lng + dLng]);
+            });
+            lastCenterLat = ll.lat;
+            lastCenterLng = ll.lng;
+            
+            _redrawPolygonPath();
+            if (window._triggerAppUpdate) window._triggerAppUpdate();
+        });
+        
+        _polyCenterMarker.on('dragend', () => {
+            if (window._triggerAppUpdate) window._triggerAppUpdate();
+        });
+
+        pts.forEach(p => {
+            const marker = L.marker([p.lat, p.lon], { icon: vertexIcon, draggable: !_polyIsLocked }).addTo(_polyLayer);
+            if (_polyIsLocked) marker.getElement()?.style.setProperty('display', 'none', 'important');
+            
+            marker.on('drag', () => {
+                // Update centroid mathematically on vertex drag
+                const latlngs = _polyPoints.map(m => Object.values(m.getLatLng()));
+                const b = L.latLngBounds(latlngs);
+                const nc = b.getCenter();
+                _polyCenterMarker.setLatLng(nc);
+                lastCenterLat = nc.lat;
+                lastCenterLng = nc.lng;
+                
+                _redrawPolygonPath();
+                if (window._triggerAppUpdate) window._triggerAppUpdate();
+            });
+            
+            marker.on('dragend', () => { 
+                if (window._triggerAppUpdate) window._triggerAppUpdate();
+            });
+            _polyPoints.push(marker);
+        });
+        
+        _redrawPolygonPath();
+        if (window._triggerAppUpdate) window._triggerAppUpdate();
+    }
+
+    function _redrawPolygonPath() {
+        if (_polyPoints.length < 3) return;
+        const latlngs = _polyPoints.map(m => m.getLatLng());
+        
+        if (_polyPolygon) {
+            _polyPolygon.setLatLngs(latlngs);
+            _polyPolygon.setStyle({ color: _polyColor, fillColor: _polyColor });
+        } else {
+            _polyPolygon = L.polygon(latlngs, {
+                color: _polyColor,
+                weight: 2,
+                fillColor: _polyColor,
+                fillOpacity: 0.15,
+                dashArray: '5, 5'
+            }).addTo(_polyLayer);
+        }
+    }
+
+    window.clearPoly = function() {
+        _polyPoints = [];
+        _polyCenterMarker = null;
+        if (_polyLayer) _polyLayer.clearLayers();
+        _polyPolygon = null;
+        if (window._triggerAppUpdate) window._triggerAppUpdate();
+    };
+
+    window.getPolyBounds = function() {
+        if (!_polyPolygon || _polyPoints.length < 3) return null;
+        return _polyPoints.map(m => {
+            const ll = m.getLatLng();
+            return { lat: ll.lat, lon: ll.lng };
+        });
+    };
+
+    window.updatePolyStyle = function(numVerts, colorHex) {
+        _polyColor = colorHex;
+        if (_polyPoints.length > 0 && _polyPoints.length !== numVerts) {
+            window.drawPolygonMask(numVerts, colorHex); // redraws entirely
+        } else {
+            _redrawPolygonPath(); // just updates color if active
+        }
+    };
+
+    window.togglePolyLock = function(isLocked) {
+        _polyIsLocked = isLocked;
+        if (_polyCenterMarker) {
+            const cel = _polyCenterMarker.getElement();
+            if (cel) cel.style.setProperty('display', isLocked ? 'block' : 'none', 'important');
+        }
+        _polyPoints.forEach(m => {
+            const el = m.getElement();
+            if (el) el.style.setProperty('display', isLocked ? 'none' : 'block', 'important');
+            if (m.dragging) {
+                if (isLocked) m.dragging.disable();
+                else m.dragging.enable();
+            }
+        });
+    };
 
     const TILE_CONFIGS = {
         osm: {
@@ -590,13 +763,14 @@ const MapView = (() => {
             
             const isUsed = validSet.has(obs.id);
             const maskActive = typeof window.getMaskBounds === 'function' && window.getMaskBounds() !== null;
+            const polyActive = typeof window.getPolyBounds === 'function' && window.getPolyBounds() !== null;
             
             // "Anything below a set confidence threshold should hide the bearing vectors"
             // "any bearing vector that does not intersect with a custom drawn area should be hidden"
             if (!isUsed) return;
             
             // "For those bearing vectors that do intersect with this drawn area should have their bearing colors change to magenta"
-            const curBearingColor = maskActive ? '#ff00ff' : BEARING_COLOR;
+            const curBearingColor = (maskActive || polyActive) ? '#ff00ff' : BEARING_COLOR;
 
             _drawnObsIds.add(obs.id);
 

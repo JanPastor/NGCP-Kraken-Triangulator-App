@@ -165,28 +165,109 @@
         }
         _processData(_lastData);
     });
+    const syncMenuStates = () => {
+        const maskToggle = document.getElementById('btn-draw-mask-toggle');
+        const polyToggle = document.getElementById('btn-draw-poly-toggle');
+        const maskBlock = document.getElementById('mask-tools-block');
+        const polyBlock = document.getElementById('poly-tools-block');
+        
+        if (maskToggle && polyToggle && maskBlock && polyBlock) {
+            const maskToggleRow = maskToggle.closest('div');
+            const polyToggleRow = polyToggle.closest('div');
+            
+            // Reset state
+            maskBlock.style.opacity = '1'; maskBlock.style.pointerEvents = 'auto';
+            polyBlock.style.opacity = '1'; polyBlock.style.pointerEvents = 'auto';
+            if (maskToggleRow) { maskToggleRow.style.opacity = '1'; maskToggleRow.style.pointerEvents = 'auto'; maskToggle.disabled = false; }
+            if (polyToggleRow) { polyToggleRow.style.opacity = '1'; polyToggleRow.style.pointerEvents = 'auto'; polyToggle.disabled = false; }
+
+            if (maskToggle.checked) {
+                // Dim Poly entirely
+                polyBlock.style.opacity = '0.3'; polyBlock.style.pointerEvents = 'none';
+                if (polyToggleRow) { polyToggleRow.style.opacity = '0.3'; polyToggleRow.style.pointerEvents = 'none'; polyToggle.disabled = true; }
+            } else if (polyToggle.checked) {
+                // Dim Mask entirely
+                maskBlock.style.opacity = '0.3'; maskBlock.style.pointerEvents = 'none';
+                if (maskToggleRow) { maskToggleRow.style.opacity = '0.3'; maskToggleRow.style.pointerEvents = 'none'; maskToggle.disabled = true; }
+            }
+        }
+    };
 
     document.getElementById('btn-draw-mask-toggle')?.addEventListener('change', (e) => {
         if (!window.drawDefaultMask) return;
         if (e.target.checked) {
+            const polyToggle = document.getElementById('btn-draw-poly-toggle');
+            if (polyToggle && polyToggle.checked) {
+                polyToggle.checked = false;
+                if (window.clearPoly) window.clearPoly();
+            }
             window.drawDefaultMask(null, null); // Trigger interactive crosshair drawing mode immediately
         } else {
             if (window.clearMask) window.clearMask();
         }
+        syncMenuStates();
     });
     
+    document.getElementById('btn-draw-poly-toggle')?.addEventListener('change', (e) => {
+        if (!window.drawPolygonMask) return;
+        if (e.target.checked) {
+            const maskToggle = document.getElementById('btn-draw-mask-toggle');
+            if (maskToggle && maskToggle.checked) {
+                maskToggle.checked = false;
+                if (window.clearMask) window.clearMask();
+            }
+            const verts = parseInt(document.getElementById('poly-vertices')?.value || 6);
+            const color = document.getElementById('poly-color')?.value || '#fa8231';
+            window.drawPolygonMask(verts, color);
+        } else {
+            if (window.clearPoly) window.clearPoly();
+        }
+        syncMenuStates();
+    });
+
     document.getElementById('btn-clear-mask')?.addEventListener('click', () => {
         const toggle = document.getElementById('btn-draw-mask-toggle');
         if (toggle) toggle.checked = false;
         if (window.clearMask) window.clearMask();
+        syncMenuStates();
+    });
+    
+    document.getElementById('btn-clear-poly')?.addEventListener('click', () => {
+        const toggle = document.getElementById('btn-draw-poly-toggle');
+        if (toggle) toggle.checked = false;
+        if (window.clearPoly) window.clearPoly();
+        syncMenuStates();
+    });
+
+    const updatePolyLive = () => {
+        const toggle = document.getElementById('btn-draw-poly-toggle');
+        if (toggle && toggle.checked && window.updatePolyStyle) {
+            const verts = parseInt(document.getElementById('poly-vertices')?.value || 6);
+            const color = document.getElementById('poly-color')?.value || '#fa8231';
+            window.updatePolyStyle(verts, color);
+        }
+    };
+    document.getElementById('poly-vertices')?.addEventListener('change', () => {
+        updatePolyLive();
+        if (window._triggerAppUpdate) window._triggerAppUpdate();
+    });
+    document.getElementById('poly-color')?.addEventListener('input', () => {
+        updatePolyLive();
+    });
+    document.getElementById('poly-lock')?.addEventListener('change', (e) => {
+        if (window.togglePolyLock) window.togglePolyLock(e.target.checked);
     });
 
     document.getElementById('btn-clear-all-overlays')?.addEventListener('click', () => {
         if (window.clearMask) window.clearMask();
+        if (window.clearPoly) window.clearPoly();
         if (MapView.clearHeat) MapView.clearHeat();
-        // Clear custom markers
-        const toggle = document.getElementById('btn-draw-mask-toggle');
-        if (toggle) toggle.checked = false;
+        
+        const maskToggle = document.getElementById('btn-draw-mask-toggle');
+        if (maskToggle) maskToggle.checked = false;
+        const polyToggle = document.getElementById('btn-draw-poly-toggle');
+        if (polyToggle) polyToggle.checked = false;
+        syncMenuStates();
     });
     
     window._triggerAppUpdate = () => {
@@ -280,7 +361,9 @@
         if (pbBar) pbBar.style.display = 'flex';
         _pbPaused = pb.paused;
         // Play/Pause icon: paused = show play triangle, playing = show pause bars
-        pbPlayPause.innerHTML = pb.paused ? '&#9654;' : '&#9646;&#9646;';
+        const playSVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+        const pauseSVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:14px;height:14px;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>';
+        pbPlayPause.innerHTML = pb.paused ? playSVG : pauseSVG;
         pbPlayPause.classList.toggle('paused', !pb.paused);
         pbPlayPause.title = pb.paused ? 'Play' : 'Pause';
         // Scrubber
@@ -482,10 +565,17 @@
             aabb = window.getMaskBounds();
         }
         
+        let polyBounds = null;
+        if (typeof window.getPolyBounds === 'function') {
+            polyBounds = window.getPolyBounds();
+        }
+        
         const config = {
             filterSpatial: document.getElementById('btn-draw-mask-toggle')?.checked ?? false,
+            filterPoly: document.getElementById('btn-draw-poly-toggle')?.checked ?? false,
             filterAngular: elFilterAngular?.checked ?? true,
-            aabb: aabb
+            aabb: aabb,
+            polyBounds: polyBounds
         };
 
         const algo   = elAlgo?.value || 'ls_aoa';

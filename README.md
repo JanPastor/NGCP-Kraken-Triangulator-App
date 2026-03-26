@@ -1,97 +1,87 @@
-# KrakenSDR Bearing Verification Web App
+# KrakenSDR Triangulator Web App
 
-A **laptop-side** web application for verifying KrakenSDR bearing estimates and performing signal-source triangulation. Inspired by the official KrakenSDR Android app.
+A professional **laptop-side** web application designed for verifying KrakenSDR bearing estimates and performing advanced signal-source triangulation. This tooling is built specifically for Commander laptops during NGCP UAV signal-hunting operations.
 
-> **Runs on the commander laptop — not the Raspberry Pi 5.**  
-> This sub-project is self-contained and has no runtime dependency on the Pi-side GCS pipeline.
+> **Note:** This runs on the ground station laptop — not the Raspberry Pi 5. It is self-contained and operates independently of the Pi-side GCS telemetry pipeline.
 
 ---
 
 ## What This Does
 
-1. **Ingests bearing estimates** from KrakenSDR receivers (mock data in dev, live data via Pi 5 later).
-2. **Triangulates** the signal source position using the Least Squares Angle-of-Arrival (LS-AoA) method from multiple receiver stations.
-3. **Displays** results on an interactive GPS map (Leaflet.js), a bearing confidence heatmap, and a live bearing log.
+1. **Ingests Bearing Estimates:** Receives live data from KrakenSDR receiver networks or replays localized historical `.json` files.
+2. **Advanced Triangulation Math:** Computes the estimated target origin using two distinct mathematical modes:
+   - **Bayesian Spatial Heatmap:** A probability-density field generated from accumulated intersection uncertainties.
+   - **Least Squares Angle-of-Arrival (LS-AoA):** A rigid matrix-solver designed for clean, intersecting geometries.
+3. **Interactive Spatial Filtering:** Features UI-driven spatial masking tools ("Draw Area" and "Draw Polygon") to dynamically filter out rogue bearings, reflections, or corrupted data physically tracking outside a designated zone.
+4. **Professional GUI:** Displays real-time results on an interactive map (Leaflet.js) sporting a dark, premium, utilitarian aesthetic with Playback console controls, a bearing log, and customizable mapping layers.
+
+---
+
+## Quick Start Guide
+
+Follow these step-by-step commands to get the application running on your local machine using the built-in playback data environment.
+
+### 1. Clone the Repository
+Open your terminal or command prompt and clone the main project repository:
+```bash
+git clone https://github.com/JanPastor/NGCP-Kraken-Triangulator-App.git
+cd NGCP-Kraken-Triangulator-App/kraken-triangulator
+```
+
+### 2. Install Backend Dependencies
+The application relies on a lightweight Python server (Flask) to handle spatial mathematics and serve the frontend interface. You need Python 3.8+ installed.
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Start the Application Server
+Run the Python backend server. By default, it will automatically load a dense, pre-recorded mock dataset (`data/bearings_20260313_154333.json`) so you can test the triangulation math immediately.
+```bash
+python server/kraken_server.py
+```
+*The server will boot up and bind to **http://localhost:5050**.*
+
+### 4. Open the Web App
+Open any modern web browser (Chrome, Firefox, Edge) and navigate to:
+```url
+http://localhost:5050
+```
+You are now in the app! Use the **Data Playback** console at the top to hit **Play (▶)** and watch the historical triangulation happen in real-time.
 
 ---
 
 ## Directory Structure
-
-```
+```text
 kraken-triangulator/
 ├── README.md                  # This file
 ├── requirements.txt           # Python backend dependencies
 ├── server/
-│   └── kraken_server.py       # Flask dev server (mock API, later: KrakenSDR proxy)
+│   └── kraken_server.py       # Flask backend & math/playback engine
 ├── data/
-│   └── mock_bearings.json     # Static development fixture (2 stations, mock bearings)
+│   └── bearings_*.json        # Pre-recorded JSON telemetry for playback testing
 └── app/
-    ├── index.html             # SPA shell (Map, Heatmap, Log, Settings tabs)
-    ├── style.css              # Dark mode, premium aesthetic
+    ├── index.html             # The main Single Page Application GUI
+    ├── style.css              # Dark mode styling and CSS definitions
     └── js/
-        ├── main.js            # App init and tab routing
-        ├── map.js             # Leaflet GPS map + bearing line overlays
-        ├── heatmap.js         # Leaflet.heat bearing accumulation heatmap
-        ├── triangulation.js   # LS-AoA triangulation math
-        └── data_feed.js       # Polling from /api/bearings endpoint
+        ├── main.js            # App initialization, settings, and playback state
+        ├── map.js             # Leaflet GPS map, heatmap, and custom overlays
+        ├── triangulation.js   # Core LS-AoA / Bayesian solvers & Spatial Filtering
+        └── data_feed.js       # Asynchronous data polling from the Python backend
 ```
 
 ---
 
-## Quick Start
+## Live Hardware Integration
 
-### Prerequisites
-- Python 3.8+
-- A modern browser (Chrome, Firefox, Edge)
+When you are ready to connect a live KrakenSDR unit instead of using Playback data, invoke the server by passing the Kraken's API URL as an environment variable:
 
-### 1. Install backend dependencies
+**Linux / Mac:**
 ```bash
-cd kraken-triangulator
-pip install -r requirements.txt
+KRAKEN_API_URL=http://<kraken-ip-address>:8080 python server/kraken_server.py
 ```
 
-### 2. Run the dev server
-```bash
+**Windows (PowerShell):**
+```powershell
+$env:KRAKEN_API_URL="http://<kraken-ip-address>:8080"
 python server/kraken_server.py
 ```
-
-The server starts on **http://localhost:5050**. Open that URL in your laptop browser.
-
-### 3. Open the app
-```
-http://localhost:5050
-```
-
-You should see the map with two mock stations, bearing lines, and a triangulation estimate marker.
-
----
-
-## Connecting to a Live KrakenSDR (Future)
-
-When the Pi 5 KrakenSDR integration is ready:
-
-1. Set the `KRAKEN_API_URL` environment variable to point at the Pi's KrakenSDR HTTP API endpoint:
-   ```bash
-   KRAKEN_API_URL=http://<pi5-tailscale-ip>:8080 python server/kraken_server.py
-   ```
-2. No changes to the frontend are needed — `data_feed.js` always polls `localhost:5050/api/bearings`.
-
----
-
-## Relationship to the Main Pipeline
-
-| Component | Location | Runs On |
-|---|---|---|
-| GCS Telemetry Pipeline | `scripts/` | Raspberry Pi 5 |
-| Pi-side GUI Monitor | `web/` | Raspberry Pi 5 |
-| **KrakenSDR Triangulator** | **`kraken-triangulator/`** | **Commander Laptop** |
-
----
-
-## Planned Features
-- [ ] Live KrakenSDR HTTP API proxy
-- [ ] Multi-station selector (add/remove stations at runtime)
-- [ ] Export triangulation session to GeoJSON
-- [ ] UAV telemetry overlay (lat/lon from `gcs_translator.py`)
-- [ ] Uncertainty ellipse visualization
-- [ ] Unit tests for `triangulation.js` math

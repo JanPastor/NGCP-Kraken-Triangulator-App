@@ -1,18 +1,16 @@
 /**
  * main.js — App Orchestrator (Single Mobile KrakenSDR Model)
  * ===========================================================
- * Wires tab routing, settings, playback controls, bearing log, and the
+ * Wires tab routing, settings, bearing log, and the
  * full data pipeline:
  *   DataFeed -> Triangulation.solve(observation_history) -> MapView + HeatmapView
  *
  * Data schema: { observation_history[], current_observation, frequency_hz,
- *                doa_method, playback: { index, total, speed, paused } }
+ *                doa_method }
  *
  * Timestamp note:
  *   "LAST RECEIVED" shows the laptop system clock at the moment the poll
- *   response arrived — NOT the timestamp in the mock data (which is
- *   fictional). The server assigns real system-clock timestamps to each
- *   observation the moment it is first revealed.
+ *   response arrived.
  */
 
 (function () {
@@ -21,26 +19,317 @@
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabPanels  = document.querySelectorAll('.tab-panel');
 
+    let _estimationMap = null;
+    let _estimationMarkers = null;
+    let _estimationHits = [];
+    let _estIdCounter = 0;
+
+    function initEstimationMap() {
+        if (_estimationMap) {
+            _estimationMap.invalidateSize();
+            return;
+        }
+        _estimationMap = L.map('estimation-map', { zoomControl: true });
+        // Use initial view near equator or something safe until first hit
+        _estimationMap.setView([0, 0], 2);
+        
+        const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        });
+        tileLayer.addTo(_estimationMap);
+        _estimationMarkers = L.layerGroup().addTo(_estimationMap);
+
+        // sync tile layer setting if exists
+        const elTile = document.getElementById('setting-tile');
+        if (elTile && typeof TILE_CONFIGS !== 'undefined') {
+            const tc = TILE_CONFIGS[elTile.value] || TILE_CONFIGS['osm'];
+            tileLayer.setUrl(tc.url);
+        }
+    }
+
     function switchTab(targetId) {
         tabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === targetId));
         tabPanels.forEach(panel => {
             panel.classList.toggle('active', panel.id === `panel-${targetId}`);
         });
-        // Fix: call invalidateSize so Leaflet redraws after hidden→visible
-        if (targetId === 'map')     requestAnimationFrame(() => MapView.invalidateSize());
+        if (targetId === 'map') requestAnimationFrame(() => MapView.invalidateSize());
+        if (targetId === 'estimation') requestAnimationFrame(() => initEstimationMap());
     }
+
+    function _formatCoord(c) {
+        return c.toFixed(6);
+    }
+
+    // ── Convergence Computation ─────────────────────────────────
+    function _computeConvergence() {
+        if (_estimationHits.length < 2) return null;
+
+        let totalWeight = 0;
+        let wLat = 0, wLon = 0;
+
+        for (const hit of _estimationHits) {
+            // Weight = 1 / residual_m (clamped to avoid division by near-zero)
+            const residual = Math.max(hit.residual_m ?? 1, 0.1);
+            const w = 1.0 / residual;
+            wLat += w * hit.lat;
+            wLon += w * hit.lon;
+            totalWeight += w;
+        }
+
+        const cLat = wLat / totalWeight;
+        const cLon = wLon / totalWeight;
+
+        // Weighted standard deviation (spread) in meters
+        let wSumSqDist = 0;
+        for (const hit of _estimationHits) {
+            const residual = Math.max(hit.residual_m ?? 1, 0.1);
+            const w = 1.0 / residual;
+            const distM = Triangulation.distanceMeters(cLat, cLon, hit.lat, hit.lon);
+            wSumSqDist += w * distM * distM;
+        }
+        const spreadM = Math.sqrt(wSumSqDist / totalWeight);
+
+        return {
+            lat: cLat,
+            lon: cLon,
+            spreadM: spreadM,
+            count: _estimationHits.length
+        };
+    }
+
+    function _renderEstimationLog() {
+        const histContainer = document.getElementById('est-log-history');
+        const hitCountEl = document.getElementById('est-hit-count');
+        if (!histContainer) return;
+
+        const convergenceEnabled = document.getElementById('setting-convergence')?.checked ?? true;
+
+        // ── Update Converged Estimate Card ──
+        _updateConvergedCard(convergenceEnabled);
+
+        // ── Render Hit Log ──
+        histContainer.innerHTML = '';
+        if (hitCountEl) hitCountEl.textContent = `${_estimationHits.length} hits`;
+
+        if (_estimationHits.length === 0) {
+            histContainer.innerHTML = `<div style="font-size:0.75rem; color:var(--text-muted); font-style:italic; padding:8px; text-align:center;">No hits recorded inside search area.</div>`;
+            return;
+        }
+
+        const normHits = [..._estimationHits].reverse();
+
+        normHits.forEach(hit => {
+            const itemDiv = document.createElement('div');
+            itemDiv.className = `estimation-item significant`;
+            const residualLabel = hit.residual_m != null ? hit.residual_m.toFixed(1) + ' m' : '—';
+            itemDiv.innerHTML = `
+                <div class="est-row">
+                    <span>Lat/Lon</span>
+                    <span class="est-val">${_formatCoord(hit.lat)}, ${_formatCoord(hit.lon)}</span>
+                </div>
+                <div class="est-row">
+                    <span>Residual</span>
+                    <span class="est-val">${residualLabel}</span>
+                </div>
+                <div class="est-row">
+                    <span>Time</span>
+                    <span class="est-val">${new Date(hit.timestamp).toLocaleTimeString()}</span>
+                </div>
+                <div class="est-actions">
+                    <button class="est-btn transmit" data-id="${hit.id}">Transmit</button>
+                    <button class="est-btn delete" data-id="${hit.id}">Delete</button>
+                </div>
+            `;
+            histContainer.appendChild(itemDiv);
+        });
+
+        // Bind buttons
+        document.querySelectorAll('.est-btn.transmit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.target.dataset.id);
+                const hit = _estimationHits.find(h => h.id === id);
+                if (hit) {
+                    console.log(`[Telemetry] TRANSMITTING: ${hit.lat}, ${hit.lon}`);
+                    alert(`Transmitted coordinates to GCS: \nLat: ${hit.lat}\nLon: ${hit.lon}`);
+                }
+            });
+        });
+        document.querySelectorAll('.est-btn.delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = parseInt(e.target.dataset.id);
+                _estimationHits = _estimationHits.filter(h => h.id !== id);
+                _redrawEstimationMarkers();
+                _renderEstimationLog();
+            });
+        });
+    }
+
+    function _updateConvergedCard(enabled) {
+        const card = document.getElementById('converged-estimate-card');
+        const badge = document.getElementById('converged-status-badge');
+        const btnTransmit = document.getElementById('btn-conv-transmit');
+        if (!card) return;
+
+        if (!enabled) {
+            card.className = 'converged-card converged-disabled';
+            if (badge) badge.textContent = 'OFF';
+            if (btnTransmit) btnTransmit.disabled = true;
+            return;
+        }
+
+        const conv = _computeConvergence();
+
+        if (!conv) {
+            card.className = 'converged-card converged-active';
+            if (badge) badge.textContent = _estimationHits.length === 0 ? 'WAITING' : '1 HIT';
+            document.getElementById('conv-lat').textContent = _estimationHits.length === 1 ? _estimationHits[0].lat.toFixed(6) + '°' : '—';
+            document.getElementById('conv-lon').textContent = _estimationHits.length === 1 ? _estimationHits[0].lon.toFixed(6) + '°' : '—';
+            document.getElementById('conv-count').textContent = `${_estimationHits.length} hits`;
+            document.getElementById('conv-spread').textContent = '—';
+            if (btnTransmit) btnTransmit.disabled = _estimationHits.length < 1;
+            return;
+        }
+
+        card.className = 'converged-card converged-active';
+        if (badge) badge.textContent = 'LIVE';
+
+        document.getElementById('conv-lat').textContent = conv.lat.toFixed(6) + '°';
+        document.getElementById('conv-lon').textContent = conv.lon.toFixed(6) + '°';
+        document.getElementById('conv-count').textContent = `${conv.count} hits`;
+
+        // Display spread in appropriate units
+        const isImperial = document.getElementById('setting-units')?.value === 'imperial';
+        if (isImperial) {
+            const spreadFt = conv.spreadM * 3.28084;
+            document.getElementById('conv-spread').textContent = spreadFt >= 5280
+                ? `± ${(spreadFt / 5280).toFixed(2)} mi`
+                : `± ${spreadFt.toFixed(1)} ft`;
+        } else {
+            document.getElementById('conv-spread').textContent = conv.spreadM >= 1000
+                ? `± ${(conv.spreadM / 1000).toFixed(2)} km`
+                : `± ${conv.spreadM.toFixed(1)} m`;
+        }
+
+        if (btnTransmit) btnTransmit.disabled = false;
+    }
+
+    function _redrawEstimationMarkers() {
+        if (!_estimationMarkers) return;
+        _estimationMarkers.clearLayers();
+
+        // Individual hit markers
+        _estimationHits.forEach(hit => {
+            L.circleMarker([hit.lat, hit.lon], {
+                radius: 5,
+                color: '#fff',
+                weight: 1,
+                fillColor: '#00e87a',
+                fillOpacity: 0.8
+            }).addTo(_estimationMarkers);
+        });
+
+        // Converged centroid marker (if enabled and ≥ 2 hits)
+        const convergenceEnabled = document.getElementById('setting-convergence')?.checked ?? true;
+        if (convergenceEnabled) {
+            const conv = _computeConvergence();
+            if (conv) {
+                // Outer glow ring
+                L.circleMarker([conv.lat, conv.lon], {
+                    radius: 14,
+                    color: '#00e87a',
+                    weight: 2,
+                    fillColor: '#00e87a',
+                    fillOpacity: 0.12,
+                    dashArray: '4 4'
+                }).addTo(_estimationMarkers);
+
+                // Inner crosshair dot
+                L.circleMarker([conv.lat, conv.lon], {
+                    radius: 7,
+                    color: '#fff',
+                    weight: 2,
+                    fillColor: '#00e87a',
+                    fillOpacity: 1.0
+                }).addTo(_estimationMarkers)
+                    .bindTooltip(`Converged: ${conv.lat.toFixed(6)}, ${conv.lon.toFixed(6)}`, {
+                        permanent: false,
+                        direction: 'top',
+                        offset: [0, -12]
+                    });
+            }
+        }
+    }
+
+    function _addEstimationHit(result) {
+        // Prevent duplicate spam if location hasn't moved much (< 1 meter approx)
+        const isSpam = _estimationHits.some(h => {
+            if (Triangulation && Triangulation.distanceMeters) {
+                return Triangulation.distanceMeters(h.lat, h.lon, result.lat, result.lon) < 1.0;
+            }
+            return Math.abs(h.lat - result.lat) < 0.00001 && Math.abs(h.lon - result.lon) < 0.00001;
+        });
+
+        if (isSpam) return;
+
+        const hit = {
+            id: ++_estIdCounter,
+            lat: result.lat,
+            lon: result.lon,
+            residual_m: result.residual_m ?? null,
+            timestamp: Date.now()
+        };
+
+        _estimationHits.push(hit);
+        _redrawEstimationMarkers();
+        _renderEstimationLog();
+        
+        // Auto-pan if we are at map default view [0,0]
+        if (_estimationMap && _estimationMap.getZoom() === 2) {
+            _estimationMap.setView([result.lat, result.lon], 17);
+        }
+    }
+
+    // Set up clear button and converged transmit
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('btn-est-clear-all')?.addEventListener('click', () => {
+            if (confirm("Clear all estimation history?")) {
+                _estimationHits = [];
+                _redrawEstimationMarkers();
+                _renderEstimationLog();
+            }
+        });
+
+        // Converged Estimate transmit button
+        document.getElementById('btn-conv-transmit')?.addEventListener('click', () => {
+            const convergenceEnabled = document.getElementById('setting-convergence')?.checked ?? true;
+            if (!convergenceEnabled) return;
+
+            const conv = _computeConvergence();
+            if (conv) {
+                console.log(`[Telemetry] TRANSMITTING CONVERGED: ${conv.lat}, ${conv.lon} (±${conv.spreadM.toFixed(1)}m, ${conv.count} hits)`);
+                alert(`Transmitted CONVERGED coordinates to GCS:\nLat: ${conv.lat.toFixed(6)}\nLon: ${conv.lon.toFixed(6)}\nSpread: ±${conv.spreadM.toFixed(1)}m\nBased on: ${conv.count} hits`);
+            } else if (_estimationHits.length === 1) {
+                // Single hit — transmit directly
+                const hit = _estimationHits[0];
+                console.log(`[Telemetry] TRANSMITTING SINGLE: ${hit.lat}, ${hit.lon}`);
+                alert(`Transmitted coordinates to GCS:\nLat: ${hit.lat.toFixed(6)}\nLon: ${hit.lon.toFixed(6)}`);
+            }
+        });
+    });
 
     tabButtons.forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
     switchTab('map');
 
     // ── Settings Wiring ────────────────────────────────────────────
-    const elPollInterval = document.getElementById('setting-poll-interval');
-    const elTile         = document.getElementById('setting-tile');
-    const elUncertainty  = document.getElementById('setting-uncertainty');
-    const elLineLength   = document.getElementById('setting-line-length');
-    const elAlgo         = document.getElementById('setting-algo');
-    const elMinConf      = document.getElementById('setting-min-conf');
-    const elUnits        = document.getElementById('setting-units');
+    const elPollInterval  = document.getElementById('setting-poll-interval');
+    const elTile          = document.getElementById('setting-tile');
+    const elUncertainty   = document.getElementById('setting-uncertainty');
+    const elLineLength    = document.getElementById('setting-line-length');
+    const elAlgo          = document.getElementById('setting-algo');
+    const elMinConf       = document.getElementById('setting-min-conf');
+    const elUnits         = document.getElementById('setting-units');
+    const elConvergence   = document.getElementById('setting-convergence');
 
     function bindSetting(el) {
         if (!el) return;
@@ -62,9 +351,15 @@
         document.getElementById('setting-filter-spatial'), 
         document.getElementById('setting-filter-temporal'), 
         document.getElementById('setting-filter-attitude'), 
-        document.getElementById('setting-filter-angular')];
+        document.getElementById('setting-filter-angular'),
+        elConvergence];
         
     _allSettings.forEach(bindSetting);
+
+    // Convergence toggle → immediately re-render estimation UI
+    elConvergence?.addEventListener('change', () => {
+        _renderEstimationLog();
+    });
 
     elPollInterval?.addEventListener('change', () =>
         DataFeed.setPollInterval(parseInt(elPollInterval.value, 10) || 2000));
@@ -323,70 +618,6 @@
         document.getElementById(id)?.addEventListener('change', updateMaskFromInputs);
     });
 
-    // ── Playback Controls ──────────────────────────────────────────
-    const pbBar       = document.getElementById('playback-bar');
-    const pbPlayPause = document.getElementById('pb-playpause');
-    const pbRewind    = document.getElementById('pb-rewind');
-    const pbForward   = document.getElementById('pb-forward');
-    const pbReset     = document.getElementById('pb-reset');
-    const pbScrubber  = document.getElementById('pb-scrubber');
-    const pbPosLabel  = document.getElementById('pb-pos-label');
-    const pbSpeed     = document.getElementById('pb-speed');
-
-    let _pbPaused = false;
-
-    async function _pbCommand(action, value) {
-        const body = { action };
-        if (value !== undefined) body.value = value;
-        try {
-            const resp = await fetch('/api/playback', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-            const data = await resp.json();
-            // Immediately process the new state returned by the server
-            if (data?.observation_history) _processData(data);
-            _updatePlaybackUI(data?.playback);
-        } catch (e) {
-            console.warn('[Playback] Command failed:', e);
-        }
-    }
-
-    function _updatePlaybackUI(pb) {
-        if (!pb) {
-            if (pbBar) pbBar.style.display = 'none';
-            return;
-        }
-        if (pbBar) pbBar.style.display = 'flex';
-        _pbPaused = pb.paused;
-        // Play/Pause icon: paused = show play triangle, playing = show pause bars
-        const playSVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:16px;height:16px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
-        const pauseSVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:14px;height:14px;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>';
-        pbPlayPause.innerHTML = pb.paused ? playSVG : pauseSVG;
-        pbPlayPause.classList.toggle('paused', !pb.paused);
-        pbPlayPause.title = pb.paused ? 'Play' : 'Pause';
-        // Scrubber
-        pbScrubber.max   = pb.total || 6;
-        pbScrubber.value = pb.index || 1;
-        if (pbPosLabel) pbPosLabel.textContent = `${pb.index} / ${pb.total}`;
-        // Speed
-        if (pbSpeed && pb.speed !== undefined) {
-            pbSpeed.value = pb.speed;
-        }
-    }
-
-    pbPlayPause?.addEventListener('click', () =>
-        _pbCommand(_pbPaused ? 'play' : 'pause'));
-    pbRewind?.addEventListener('click',  () => _pbCommand('rewind'));
-    pbForward?.addEventListener('click', () => _pbCommand('forward'));
-    pbReset?.addEventListener('click',   () => _pbCommand('reset'));
-
-    pbScrubber?.addEventListener('change', () =>
-        _pbCommand('seek', parseInt(pbScrubber.value, 10)));
-
-    pbSpeed?.addEventListener('change', () =>
-        _pbCommand('set_speed', parseFloat(pbSpeed.value)));
 
     // ── Bearing Log ───────────────────────────────────────────────
     let _logEntries = [];
@@ -517,9 +748,8 @@
     function _processData(data) {
         _lastData = data;
 
-        // Status Badge and Playback Logic
+        // Status Badge
         if (data?.source === 'udp_stream') {
-            if (pbBar) pbBar.style.display = 'none';
             if (modeBadge) {
                 modeBadge.textContent = 'LIVE TELEMETRY';
                 modeBadge.className = 'badge badge-live';
@@ -527,19 +757,15 @@
                 modeBadge.style.color = '#fff';
                 modeBadge.style.border = 'none';
             }
-        } else if (data?.source === 'mock') {
-            if (pbBar) pbBar.style.display = 'flex';
+        } else if (data?.source === 'waiting') {
             if (modeBadge) {
-                modeBadge.textContent = 'DATA';
-                modeBadge.className = 'badge badge-mock';
+                modeBadge.textContent = 'WAITING';
+                modeBadge.className = 'badge badge-waiting';
                 modeBadge.style.background = '';
                 modeBadge.style.color = '';
                 modeBadge.style.border = '';
             }
         }
-
-        // Sync playback UI from embedded state
-        if (data?.playback) _updatePlaybackUI(data.playback);
 
         let history = data?.observation_history ?? [];
         const minConf = parseFloat(elMinConf?.value ?? 0.5);
@@ -604,6 +830,17 @@
             }
             const el = document.getElementById('hm-point-count');
             if (el) el.textContent = MapView.getHeatPointCount();
+
+            // ── Estimation Mask & Proximity Flagging ──
+            if (typeof window.getSearchAreaSummary === 'function') {
+                const sa = window.getSearchAreaSummary();
+                if (sa && sa.isActive && sa.center && sa.isInside) {
+                    const isInside = sa.isInside(result.lat, result.lon);
+                    if (isInside) {
+                        _addEstimationHit(result);
+                    }
+                }
+            }
         }
 
         updateResultPanel(data, result, validObs);

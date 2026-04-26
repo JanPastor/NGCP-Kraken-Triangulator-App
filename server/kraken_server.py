@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-kraken_server.py — KrakenSDR Triangulator Dev Server
+kraken_server.py — KrakenSDR Triangulator Server
 =====================================================
-Single mobile KrakenSDR model with playback controls.
+Live-only telemetry server. Receives bearing observations via UDP
+and serves them to the web dashboard.
 
-Playback API:
+API:
   GET  /api/bearings           — current observation history
-  GET  /api/playback           — playback state (index, total, speed, paused)
-  POST /api/playback           — send playback command (JSON body)
-    { "action": "play" | "pause" | "forward" | "rewind" | "reset" | "seek" | "set_speed",
-      "value": <int or float>  }   # value used by seek (waypoint index) and set_speed
+  GET  /api/health             — server health check
 
 Usage:
     python server/kraken_server.py
@@ -48,11 +46,8 @@ except ImportError:
 # ── Configuration ──────────────────────────────────────────────────────────────
 PORT            = int(os.environ.get("PORT", 5050))
 KRAKEN_API_URL  = os.environ.get("KRAKEN_API_URL", "")
-BASE_ADVANCE_S  = float(os.environ.get("ADVANCE_EVERY_S", "0.5"))
 
 BASE_DIR        = Path(__file__).resolve().parent.parent
-MOCK_FILE_NAME  = os.environ.get("BEARINGS_FILE", "bearings_20260313_154333.json")
-MOCK_DATA_PATH  = BASE_DIR / "data" / MOCK_FILE_NAME
 APP_DIR         = BASE_DIR / "app"
 UPLOAD_DIR      = BASE_DIR / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,19 +62,8 @@ logger = logging.getLogger("kraken_server")
 app = Flask(__name__, static_folder=str(APP_DIR))
 CORS(app)
 
-# ── Playback State (protected by lock) ────────────────────────────────────────
-_lock           = threading.Lock()
-_mock_data      = None
-_waypoints      = []
-_obs_index      = 1        # How many waypoints are visible (1-based)
-_paused         = False
-_speed          = 1.0      # Multiplier: 0.25x, 0.5x, 1x, 2x, 4x
-_last_advance_t = 0.0
-# Observation receive timestamps (system clock, not mock data)
-_obs_timestamps = {}       # { obs_id: ISO timestamp string }
-
 # ── Live UDP State ────────────────────────────────────────────────────────────
-_live_mode      = False
+_lock           = threading.Lock()
 UDP_PORT        = int(os.environ.get("UDP_PORT", 5051))
 _live_history   = []
 _live_current   = None
@@ -130,16 +114,15 @@ def _advance_waypoint():
         _last_advance_t = now
 
 def _build_response():
-    if _live_mode:
+    if _live_history:
         return {
             "source":              "udp_stream",
-            "frequency_hz":        _mock_data.get("frequency_hz", 462637500) if _mock_data else 462637500,
+            "frequency_hz":        462637500,
             "mode":                "live_telemetry",
-            "doa_method":          _mock_data.get("doa_method", "MUSIC") if _mock_data else "MUSIC",
+            "doa_method":          "MUSIC",
             "current_observation": _live_current,
             "observation_history": _live_history,
-            "expected_target":     _mock_data.get("expected_target") if _mock_data else None,
-            "playback":            None
+            "expected_target":     None,
         }
 
     if not _waypoints:
@@ -197,7 +180,7 @@ def get_bearings():
             resp.raise_for_status()
             return jsonify({"source": "live", "raw": resp.json()})
         except Exception as e:
-            logger.warning(f"Live fetch failed ({e}), falling back to mock.")
+            logger.warning(f"Live fetch failed ({e}), waiting for UDP data.")
 
     with _lock:
         _advance_waypoint()
@@ -278,8 +261,7 @@ def health():
             "status":  "ok",
             "mode":    mode,
             "port":    PORT,
-            "index":   _obs_index,
-            "total":   len(_waypoints),
+            "observations": len(_live_history),
         })
 
 # ── Replay Mode API ────────────────────────────────────────────────────────────
@@ -505,7 +487,7 @@ def _translate_fusion_record(payload):
     return translated
 
 def udp_listener_thread():
-    global _live_mode, _live_history, _live_current
+    global _live_history, _live_current
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", UDP_PORT))
@@ -524,7 +506,6 @@ def udp_listener_thread():
             if 'received_at' not in payload:
                 payload['received_at'] = _now_iso()
             with _lock:
-                _live_mode = True
                 _live_history.append(payload)
                 _live_current = payload
         except Exception as e:
@@ -548,7 +529,18 @@ def _mavlink_drain_thread():
             logger.error(f"MAVLink drain error: {e}")
             time.sleep(1)
 
-if __name__ == "__main__":
+def start_server(open_browser=False):
+    """Initialize all background threads and start the Flask server.
+    
+    This function is the single entry point for both direct invocation
+    (python kraken_server.py) and the packaged launcher (launcher.py).
+    
+    Args:
+        open_browser: If True, automatically open the default browser
+                      to the server URL after a short delay.
+    """
+    global _live_mode, _mav_upstream
+
     _live_mode = True
     logger.info("LIVE UDP MODE FORCED. Mock data disabled.")
     
@@ -573,5 +565,18 @@ if __name__ == "__main__":
         logger.info(f"LIVE KRAKEN MODE — Proxying KrakenSDR API at {KRAKEN_API_URL}")
     else:
         logger.info(f"LIVE UDP MODE — Ready for UDP stream on port {UDP_PORT}.")
+
+    if open_browser:
+        import webbrowser
+        def _open():
+            import time
+            time.sleep(1.5)
+            webbrowser.open(f"http://localhost:{PORT}")
+        threading.Thread(target=_open, daemon=True).start()
+
     logger.info(f"Opening at http://localhost:{PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
+
+
+if __name__ == "__main__":
+    start_server(open_browser=False)

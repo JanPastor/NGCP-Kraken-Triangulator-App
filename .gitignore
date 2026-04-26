@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+*.dist-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.manifest
+
+# Inno Setup output
+Output/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime data (created by the app at runtime)
+data/uploads/
+data/raw_logs/
+data/telemetry_logs/

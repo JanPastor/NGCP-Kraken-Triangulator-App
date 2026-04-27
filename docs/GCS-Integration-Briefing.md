@@ -23,6 +23,8 @@ The Kraken Triangulator app is designed to **run on the same GCS laptop** as the
 
 We will be providing the app as a **bundled standalone executable** (`KrakenTriangulator.exe`). No Python installation or dependency setup is required. Your team just needs to double-click the `.exe` and it launches automatically. We will handle delivering the installer ahead of demo day.
 
+> **No Wi-Fi or internet is required.** Although the Kraken app is browser-based, it runs entirely on `localhost`. No external network, Wi-Fi router, or internet connection is needed for the app to function. All communication between the Kraken app and the GCS Dashboard happens over local loopback (`localhost:5050`). This satisfies field-day network independence requirements.
+
 ---
 
 ## What MRA Needs from GCS (Two Things)
@@ -34,6 +36,8 @@ There are **two integration points** between the GCS Dashboard and the Kraken Tr
 The KrakenSDR antenna array on the UAV produces bearing data that is processed into sensor fusion records on the Pi 5. **This data must be streamed from the Pi 5 down to the GCS laptop via XBee** so the Kraken Triangulator app can receive it and perform triangulation.
 
 The Pi 5 already transmits telemetry via XBee through `gcs_translator.py`. The sensor fusion data (bearing angles, GPS positions, signal metadata) must be included in this downlink so it arrives at the GCS laptop where the Kraken Triangulator is listening on `UDP port 5051`.
+
+**Important: XBee Serial to UDP Bridge.** Since the XBee appears as a serial (COM) port on the GCS laptop, the incoming bearing data needs to be forwarded from the serial port to UDP port 5051. **MRA will provide this bridge script** as part of the bundled installer. The GCS team does not need to build or maintain a serial-to-UDP forwarder. The bridge runs alongside the Kraken app and handles the conversion automatically.
 
 > **Without this data stream, the Kraken app has nothing to triangulate.** This is the input side of the pipeline.
 
@@ -132,6 +136,8 @@ The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to prog
 | **2nd TRANSMIT** | ~7 minutes into the mission | **Report the final estimated survivor location.** Provides a refined, high-confidence location that the GCS can relay to other vehicles (e.g., ERU). |
 
 > **The mission is time-based.** The Kraken operator and/or GCS operator should keep a stopwatch running from mission start. The 1st transmit should occur at approximately the **4-minute mark** and the 2nd transmit at approximately the **7-minute mark** (leaving ~1 minute buffer before the 8-minute window closes).
+
+> **Why 8 minutes and not 20?** The overarching endurance requirement [MRA_03] specifies a 20-minute total flight time. The 8-minute window described here is the **Active Search Phase** only. The remaining flight time is allocated to transit to the search area, loitering at the final fix while waiting for the ERU, and return to base.
 
 ### Phase 1: Wide Orbit, Coarse Fix (Minutes 0 to 4)
 

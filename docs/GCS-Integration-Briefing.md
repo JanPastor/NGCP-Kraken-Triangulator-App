@@ -11,9 +11,9 @@
 
 MRA Electrical & Software has developed a companion application called the **KrakenSDR Triangulator App**. It is a browser-based dashboard that processes RF bearing data collected by the KrakenSDR antenna array onboard the UAV and performs real-time geolocation (triangulation) to estimate where a target transmitter is located on the ground.
 
-In short: the KrakenSDR hardware listens for a specific RF signal from the air, and the Triangulator app takes those bearing measurements and computes a **patient location estimate** (latitude/longitude).
+In short: the KrakenSDR hardware listens for a specific RF signal from the air, and the Triangulator app takes those bearing measurements and computes a **survivor location estimate** (latitude/longitude).
 
-This document describes the integration work needed so the GCS Dashboard can receive and display these patient location coordinates. It also explains the **two-phase loitering mission profile** that drives the full search-and-locate workflow.
+This document describes the integration work needed so the GCS Dashboard can receive and display these survivor location coordinates. It also explains the **two-phase loitering mission profile** that drives the full search-and-locate workflow.
 
 ---
 
@@ -37,11 +37,11 @@ The Pi 5 already transmits telemetry via XBee through `gcs_translator.py`. The s
 
 > **Without this data stream, the Kraken app has nothing to triangulate.** This is the input side of the pipeline.
 
-### 2. Patient Location Relay (Kraken App to GCS Dashboard to Pi 5)
+### 2. Survivor Location Relay (Kraken App to GCS Dashboard to Pi 5)
 
 Once the Kraken Triangulator computes a target location and the MRA operator clicks **TRANSMIT**, the app stores the coordinates locally. **The GCS Dashboard needs to pick up these coordinates** so it can:
 
-1. Display the patient location on the GCS map
+1. Display the survivor location on the GCS map
 2. Relay the coordinates to the Pi 5 (via XBee) so the autonomy engine receives the target and updates its mission state
 3. **Relay the coordinates to other vehicles** (e.g., ERU) as needed
 
@@ -67,8 +67,8 @@ GET http://localhost:5050/api/target
 
 | Field | Type | Description |
 |---|---|---|
-| `lat` | `float` or `null` | Estimated patient latitude (WGS84). `null` if no target yet. |
-| `lon` | `float` or `null` | Estimated patient longitude (WGS84). `null` if no target yet. |
+| `lat` | `float` or `null` | Estimated survivor latitude (WGS84). `null` if no target yet. |
+| `lon` | `float` or `null` | Estimated survivor longitude (WGS84). `null` if no target yet. |
 | `spread_m` | `float` | Spatial spread of the estimation cluster in meters. Lower = more confident. |
 | `count` | `int` | Number of triangulation hits contributing to this estimate. |
 | `timestamp` | `float` | Unix timestamp (seconds) of when the estimate was generated. |
@@ -78,7 +78,7 @@ GET http://localhost:5050/api/target
 1. **Poll** `GET http://localhost:5050/api/target` every ~2 seconds
 2. **Check** if the `timestamp` field has changed since the last poll
 3. **When a new target is detected:**
-   - Display the patient location on the GCS map
+   - Display the survivor location on the GCS map
    - Send a `PatientLocation` command via XBee to the Pi 5
 
 This last step is important because the Pi 5 autonomy engine needs the target coordinates for mission state updates. The `PatientLocation` command (Command ID 5) is already defined in the `gcs-packet` library. It just needs to be called when a new target comes in.
@@ -102,14 +102,14 @@ def poll_kraken_target():
                 _last_target_ts = data["timestamp"]
 
                 # 1. Display on GCS map
-                update_patient_marker(data["lat"], data["lon"])
+                update_survivor_marker(data["lat"], data["lon"])
 
                 # 2. Relay to Pi 5 via XBee
                 from Command.PatientLocation import PatientLocation
                 cmd = PatientLocation((data["lat"], data["lon"]))
                 SendCommand(cmd, Vehicle.MRA)
 
-                print(f"Patient location received: {data['lat']}, {data['lon']}")
+                print(f"Survivor location received: {data['lat']}, {data['lon']}")
         except Exception:
             pass
         time.sleep(2)
@@ -124,7 +124,7 @@ The `PatientLocation` class and `SendCommand` function already exist in the `gcs
 
 ## Two-Phase Loitering Mission Profile
 
-The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to progressively refine the patient location. The total search window is **8 minutes**. The Kraken Triangulator transmits target coordinates **twice** during a mission, each with a different purpose:
+The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to progressively refine the survivor location. The total search window is **8 minutes**. The Kraken Triangulator transmits target coordinates **twice** during a mission, each with a different purpose:
 
 | Transmit | When | Purpose |
 |---|---|---|
@@ -188,7 +188,7 @@ The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to prog
 
 The GCS Dashboard's polling logic does **not** need to distinguish between the 1st and 2nd transmit. The API contract is identical for both. Each time the Kraken operator clicks TRANSMIT, a new `timestamp` appears on `GET /api/target`, and the Dashboard relays it to the Pi 5 via `PatientLocation`. The autonomy engine on the Pi 5 handles the phase transitions internally.
 
-The GCS Dashboard should expect to receive **exactly two patient location updates** per mission:
+The GCS Dashboard should expect to receive **exactly two survivor location updates** per mission:
 1. **1st update (~4 min):** Coarse fix. Higher `spread_m`, fewer `count`. Refines the search orbit.
 2. **2nd update (~7 min):** Final fix. Lower `spread_m`, higher `count`. This is the **official estimated survivor location** to relay to other vehicles.
 
@@ -204,8 +204,8 @@ The GCS Dashboard should expect to receive **exactly two patient location update
 │  │ Kraken Triangulator   │ ──────────────────── │  GCS Dashboard │  │
 │  │  (localhost:5050)     │  {lat, lon, ...}     │                │  │
 │  │                       │                      │  Displays the  │  │
-│  │  Processes bearings,  │                      │  patient fix   │  │
-│  │  computes patient fix │                      │  on the map    │  │
+│  │  Processes bearings,  │                      │  survivor fix  │  │
+│  │  computes survivor   │                      │  on the map    │  │
 │  │                       │                      │                │  │
 │  │  [MRA Operator]       │                      │  [GCS Operator]│  │
 │  └───────────────────────┘                      └───────┬────────┘  │
@@ -248,7 +248,7 @@ On demo day, we envision **two operators working cooperatively** at the GCS stat
 
 | Operator | Role | Responsibilities |
 |---|---|---|
-| **GCS Operator** | Runs the GCS Dashboard | Monitors vehicle telemetry, handles commands (E-stop, etc.), confirms patient location updates on map, relays final survivor location to other vehicles |
+| **GCS Operator** | Runs the GCS Dashboard | Monitors vehicle telemetry, handles commands (E-stop, etc.), confirms survivor location updates on map, relays final survivor location to other vehicles |
 | **Kraken Operator** (MRA) | Runs the Kraken Triangulator | Sets up spatial filters before flight, monitors incoming sensor fusion stream, reviews estimation quality, clicks TRANSMIT at ~4 min (coarse) and ~7 min (final), **keeps a stopwatch** |
 
 ### Demo Day Timeline (8-Minute Search Window)
@@ -280,9 +280,9 @@ MRA Electrical & Software operators will be **present at the GCS station** to pr
 |---|---|---|
 | **GCS Team** | Ensure Pi 5 sensor fusion data stream reaches GCS laptop via XBee (bearing data must arrive at Kraken app's UDP port 5051) | Verify existing pipeline |
 | **GCS Team** | Add polling of `GET localhost:5050/api/target` to GCS Dashboard | ~20 lines |
-| **GCS Team** | Display patient location on GCS map when target received (expect 2 updates per mission) | Depends on existing map UI |
+| **GCS Team** | Display survivor location on GCS map when target received (expect 2 updates per mission) | Depends on existing map UI |
 | **GCS Team** | Send `PatientLocation` XBee command to Pi 5 when target received | ~3 lines (already in library) |
-| **GCS Team** | Relay 2nd (final) patient location to other vehicles (e.g., ERU) | Depends on existing relay logic |
+| **GCS Team** | Relay 2nd (final) survivor location to other vehicles (e.g., ERU) | Depends on existing relay logic |
 | **MRA Team** | Deliver `KrakenTriangulator.exe` bundled installer | In progress |
 | **MRA Team** | Provide Kraken operator on demo day with stopwatch | Confirmed |
 

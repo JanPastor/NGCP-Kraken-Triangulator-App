@@ -37,9 +37,9 @@ The KrakenSDR antenna array on the UAV produces bearing data that is processed i
 
 The Pi 5 already transmits telemetry via XBee through `gcs_translator.py`. The sensor fusion data (bearing angles, GPS positions, signal metadata) must be included in this downlink so it arrives at the GCS laptop where the Kraken Triangulator is listening on `UDP port 5051`.
 
-**Important: COM Port Ownership.** The GCS Dashboard already holds exclusive access to the XBee's serial (COM) port on the GCS laptop. Since only one process can own a serial port at a time on Windows, the GCS Dashboard is the only application that can read incoming XBee packets. **The GCS Dashboard must forward incoming bearing/sensor fusion packets to `localhost:5051` (UDP)** so the Kraken app can receive them. MRA cannot provide a separate bridge script because it would conflict with the GCS Dashboard's serial port access.
+**Note on COM Port Ownership.** MRA assumes that the GCS Dashboard has full control over the XBee's serial (COM) port on the GCS laptop. Since the GCS Dashboard owns this connection, **the GCS Dashboard is responsible for forwarding incoming bearing/sensor fusion packets to `localhost:5051` (UDP)** so the Kraken app can receive them.
 
-In practice, this means when the GCS Dashboard reads a packet from the XBee serial stream and identifies it as bearing/sensor fusion data, it should forward that packet to `UDP localhost:5051`. The Kraken Triangulator is already configured to listen on that port.
+In practice, when the GCS Dashboard reads a packet from the XBee serial stream and identifies it as bearing/sensor fusion data, it should forward that packet to `UDP localhost:5051`. The Kraken Triangulator is already configured to listen on that port.
 
 > **Without this data stream, the Kraken app has nothing to triangulate.** This is the input side of the pipeline.
 

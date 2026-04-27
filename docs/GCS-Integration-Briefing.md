@@ -13,7 +13,7 @@ MRA Electrical & Software has developed a companion application called the **Kra
 
 In short: the KrakenSDR hardware listens for a specific RF signal from the air, and the Triangulator app takes those bearing measurements and computes a **patient location estimate** (latitude/longitude).
 
-This document describes the integration work needed so the GCS Dashboard can receive and display these patient location coordinates.
+This document describes the integration work needed so the GCS Dashboard can receive and display these patient location coordinates. It also explains the **two-phase loitering mission profile** that drives the full search-and-locate workflow.
 
 ---
 
@@ -109,45 +109,130 @@ The `PatientLocation` class and `SendCommand` function already exist in the `gcs
 
 ---
 
+## Two-Phase Loitering Mission Profile
+
+The MRA autonomy engine uses a **two-phase loiter strategy** to progressively refine the patient location. The Kraken Triangulator transmits target coordinates **twice** during a mission — once per phase — and each transmission drives a mission state transition on the Pi 5.
+
+### Phase 1 — Wide Orbit (Coarse Fix)
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  UAV flies a wide loitering orbit (~500 m radius) over the         │
+│  general search area. The KrakenSDR collects RF bearings from      │
+│  multiple angles around the orbit.                                 │
+│                                                                    │
+│  The Kraken Triangulator processes these bearings and produces     │
+│  a COARSE first-pass estimate of the patient location.             │
+│                                                                    │
+│  The Kraken operator reviews the estimate and clicks TRANSMIT.     │
+│  ──► GCS Dashboard picks up the target via GET /api/target         │
+│  ──► GCS Dashboard sends PatientLocation via XBee to Pi 5          │
+│  ──► Autonomy engine receives the coarse fix and transitions       │
+│      the mission state to PHASE 2                                  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Phase 2 — Tight Orbit (Refined Fix)
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  The autonomy engine commands the UAV to fly to the coarse fix     │
+│  location and begin a TIGHTER loitering orbit (~200 m radius).     │
+│                                                                    │
+│  The KrakenSDR continues collecting bearings, now from a closer    │
+│  vantage point with better geometric diversity.                    │
+│                                                                    │
+│  The Kraken Triangulator receives this newer stream of sensor      │
+│  fusion data and computes a REFINED second-pass estimate with      │
+│  higher confidence (lower spread_m, higher count).                 │
+│                                                                    │
+│  The Kraken operator reviews and clicks TRANSMIT again.            │
+│  ──► GCS Dashboard picks up the updated target                     │
+│  ──► GCS Dashboard sends PatientLocation via XBee to Pi 5          │
+│  ──► Autonomy engine receives the refined fix and transitions      │
+│      to LOITER around the final estimated location                 │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### What This Means for GCS
+
+The GCS Dashboard's polling logic does **not** need to distinguish between Phase 1 and Phase 2 — the API contract is identical for both transmissions. Each time the Kraken operator clicks TRANSMIT, a new `timestamp` appears on `GET /api/target`, and the Dashboard relays it to the Pi 5 via `PatientLocation`. The autonomy engine on the Pi 5 handles the phase transitions internally.
+
+The GCS Dashboard should expect to receive **up to two patient location updates** per mission. The second update will generally have a lower `spread_m` value (tighter cluster, higher confidence) than the first.
+
+---
+
 ## Data Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    GCS LAPTOP (Ground)                       │
-│                                                              │
-│  ┌──────────────────────┐    GET /api/target   ┌──────────┐ │
-│  │  Kraken Triangulator │ ──────────────────── │   GCS    │ │
-│  │   (localhost:5050)   │   {lat, lon, ...}    │Dashboard │ │
-│  │                      │                      │          │ │
-│  │  [MRA Operator]      │                      │ [GCS Op] │ │
-│  └──────────────────────┘                      └────┬─────┘ │
-│                                                     │       │
-└─────────────────────────────────────────────────────│───────┘
-                                                      │
-                                          PatientLocation
-                                          XBee Command (ID 5)
-                                                      │
-                                              ┌───────▼───────┐
-                                              │   XBee XR 900 │
-                                              │   (900 MHz)   │
-                                              └───────┬───────┘
-                                                      │
-                                              ┌───────▼───────┐
-                                              │  Raspberry Pi 5│
-                                              │ (Autonomy Eng.)│
-                                              └───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      GCS LAPTOP (Ground)                            │
+│                                                                     │
+│  ┌───────────────────────┐   GET /api/target    ┌────────────────┐  │
+│  │ Kraken Triangulator   │ ──────────────────── │  GCS Dashboard │  │
+│  │  (localhost:5050)     │  {lat, lon, ...}     │                │  │
+│  │                       │                      │  Displays the  │  │
+│  │  Processes bearings,  │                      │  patient fix   │  │
+│  │  computes patient fix │                      │  on the map    │  │
+│  │                       │                      │                │  │
+│  │  [MRA Operator]       │                      │  [GCS Operator]│  │
+│  └───────────────────────┘                      └───────┬────────┘  │
+│           ▲                                             │           │
+│           │ Bearing data arrives                        │           │
+│           │ via XBee telemetry                  PatientLocation     │
+│           │ (sensor fusion stream)              XBee Command (ID 5)│
+│           │                                             │           │
+└───────────│─────────────────────────────────────────────│───────────┘
+            │                                             │
+            │                                             ▼
+    ┌───────┴─────────────────────────────────────────────────────┐
+    │                     XBee XR 900 (900 MHz)                   │
+    │              Bidirectional Air-Ground Link                   │
+    └───────┬─────────────────────────────────────────────────────┘
+            │                                             │
+            │ Telemetry + bearing data (down)              │
+            ▼                                             ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    Raspberry Pi 5 (UAV)                      │
+    │                                                              │
+    │  ┌──────────────────┐    ┌─────────────────────────────┐    │
+    │  │ KrakenSDR        │    │ Autonomy Engine              │    │
+    │  │ (bearing data)   │    │                              │    │
+    │  │       │          │    │ Phase 1: Wide orbit (500m)   │    │
+    │  │       ▼          │    │ Receives 1st PatientLocation │    │
+    │  │ gcs_translator.py│    │       ──► transitions to     │    │
+    │  │ (XBee telemetry) │    │ Phase 2: Tight orbit (200m)  │    │
+    │  │                  │    │ Receives 2nd PatientLocation │    │
+    │  │                  │    │       ──► loiters at final   │    │
+    │  └──────────────────┘    └─────────────────────────────┘    │
+    └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Demo Day Operations
 
-On demo day, we envision **two operators working cooperatively** at the GCS station:
+On demo day, we envision **two operators working cooperatively** at the GCS station across the full two-phase mission:
 
 | Operator | Role | Responsibilities |
 |---|---|---|
-| **GCS Operator** | Runs the GCS Dashboard | Monitors vehicle telemetry, handles commands (E-stop, etc.), confirms patient location on map |
-| **Kraken Operator** (MRA) | Runs the Kraken Triangulator | Sets up spatial filters, adjusts signal processing settings, monitors bearing data, clicks TRANSMIT when estimate is ready |
+| **GCS Operator** | Runs the GCS Dashboard | Monitors vehicle telemetry, handles commands (E-stop, etc.), confirms patient location updates on map, monitors mission phase transitions |
+| **Kraken Operator** (MRA) | Runs the Kraken Triangulator | Sets up spatial filters before flight, monitors incoming bearing data during both orbits, reviews estimation quality, clicks TRANSMIT at end of Phase 1 (coarse fix) and again at end of Phase 2 (refined fix) |
+
+### Typical Demo Day Timeline
+
+| Step | Action | Who |
+|---|---|---|
+| 1 | Kraken operator draws spatial filter over general search area | Kraken Op |
+| 2 | UAV launches and autonomy engine begins Phase 1 wide orbit | Automatic |
+| 3 | Kraken app accumulates bearings and triangulation results | Automatic |
+| 4 | Kraken operator reviews Phase 1 estimate and clicks **TRANSMIT** | Kraken Op |
+| 5 | GCS Dashboard picks up coarse fix, displays on map, relays to Pi 5 | GCS Op (automatic) |
+| 6 | Autonomy engine transitions to Phase 2 tight orbit at coarse fix | Automatic |
+| 7 | Kraken app accumulates refined bearings from closer orbit | Automatic |
+| 8 | Kraken operator reviews Phase 2 estimate and clicks **TRANSMIT** | Kraken Op |
+| 9 | GCS Dashboard picks up refined fix, updates map, relays to Pi 5 | GCS Op (automatic) |
+| 10 | Autonomy engine loiters at final estimated patient location | Automatic |
 
 MRA Electrical & Software operators will be **present at the GCS station** to provide full operational guidance on the Kraken Triangulator app. The GCS team does not need to learn how to operate it — the GCS Dashboard only needs to read the target coordinates from the local API and display/relay them as described above.
 

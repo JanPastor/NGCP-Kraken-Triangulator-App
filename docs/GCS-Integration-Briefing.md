@@ -1,4 +1,4 @@
-# GCS Dashboard Integration — KrakenSDR Triangulator App
+# GCS Dashboard Integration: KrakenSDR Triangulator App
 
 **From:** MRA Electrical & Software  
 **To:** GCS Subteam (Jason, Chief)  
@@ -21,7 +21,7 @@ This document describes the integration work needed so the GCS Dashboard can rec
 
 The Kraken Triangulator app is designed to **run on the same GCS laptop** as the GCS Dashboard. It runs as a local web server on `localhost:5050` and opens in a browser tab. On demo day, both the GCS Dashboard and the Kraken Triangulator will be running side-by-side on the GCS laptop.
 
-We will be providing the app as a **bundled standalone executable** (`KrakenTriangulator.exe`) — no Python installation or dependency setup required. Your team just needs to double-click the `.exe` and it launches automatically. We will handle delivering the installer ahead of demo day.
+We will be providing the app as a **bundled standalone executable** (`KrakenTriangulator.exe`). No Python installation or dependency setup is required. Your team just needs to double-click the `.exe` and it launches automatically. We will handle delivering the installer ahead of demo day.
 
 ---
 
@@ -29,7 +29,7 @@ We will be providing the app as a **bundled standalone executable** (`KrakenTria
 
 There are **two integration points** between the GCS Dashboard and the Kraken Triangulator:
 
-### 1. Sensor Fusion Data Stream (Pi 5 → GCS Laptop → Kraken App)
+### 1. Sensor Fusion Data Stream (Pi 5 to GCS Laptop to Kraken App)
 
 The KrakenSDR antenna array on the UAV produces bearing data that is processed into sensor fusion records on the Pi 5. **This data must be streamed from the Pi 5 down to the GCS laptop via XBee** so the Kraken Triangulator app can receive it and perform triangulation.
 
@@ -37,7 +37,7 @@ The Pi 5 already transmits telemetry via XBee through `gcs_translator.py`. The s
 
 > **Without this data stream, the Kraken app has nothing to triangulate.** This is the input side of the pipeline.
 
-### 2. Patient Location Relay (Kraken App → GCS Dashboard → Pi 5)
+### 2. Patient Location Relay (Kraken App to GCS Dashboard to Pi 5)
 
 Once the Kraken Triangulator computes a target location and the MRA operator clicks **TRANSMIT**, the app stores the coordinates locally. **The GCS Dashboard needs to pick up these coordinates** so it can:
 
@@ -45,7 +45,7 @@ Once the Kraken Triangulator computes a target location and the MRA operator cli
 2. Relay the coordinates to the Pi 5 (via XBee) so the autonomy engine receives the target and updates its mission state
 3. **Relay the coordinates to other vehicles** (e.g., ERU) as needed
 
-The Dashboard needs to **poll a local REST endpoint** that the Kraken Triangulator exposes. The operator will click TRANSMIT **twice** during a mission — once to refine the search orbit and once to report the final estimated survivor location (see Two-Phase Mission Profile below).
+The Dashboard needs to **poll a local REST endpoint** that the Kraken Triangulator exposes. The operator will click TRANSMIT **twice** during a mission: once to refine the search orbit and once to report the final estimated survivor location (see Two-Phase Mission Profile below).
 
 ### API Endpoint
 
@@ -81,7 +81,7 @@ GET http://localhost:5050/api/target
    - Display the patient location on the GCS map
    - Send a `PatientLocation` command via XBee to the Pi 5
 
-This last step is important because the Pi 5 autonomy engine needs the target coordinates for mission state updates. The `PatientLocation` command (Command ID 5) is already defined in the `gcs-packet` library — it just needs to be called when a new target comes in.
+This last step is important because the Pi 5 autonomy engine needs the target coordinates for mission state updates. The `PatientLocation` command (Command ID 5) is already defined in the `gcs-packet` library. It just needs to be called when a new target comes in.
 
 ### Pseudocode (~20 lines)
 
@@ -124,16 +124,16 @@ The `PatientLocation` class and `SendCommand` function already exist in the `gcs
 
 ## Two-Phase Loitering Mission Profile
 
-The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to progressively refine the patient location. The total search window is **8 minutes**. The Kraken Triangulator transmits target coordinates **twice** during a mission — each with a different purpose:
+The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to progressively refine the patient location. The total search window is **8 minutes**. The Kraken Triangulator transmits target coordinates **twice** during a mission, each with a different purpose:
 
 | Transmit | When | Purpose |
 |---|---|---|
 | **1st TRANSMIT** | ~4 minutes into the mission | **Refine the search orbit.** Provides a coarse estimated location so the autonomy engine can transition to a tighter orbit centered on the estimate. |
 | **2nd TRANSMIT** | ~7 minutes into the mission | **Report the final estimated survivor location.** Provides a refined, high-confidence location that the GCS can relay to other vehicles (e.g., ERU). |
 
-> ⏱️ **The mission is time-based.** The Kraken operator and/or GCS operator should keep a stopwatch running from mission start. The 1st transmit should occur at approximately the **4-minute mark** and the 2nd transmit at approximately the **7-minute mark** (leaving ~1 minute buffer before the 8-minute window closes).
+> **The mission is time-based.** The Kraken operator and/or GCS operator should keep a stopwatch running from mission start. The 1st transmit should occur at approximately the **4-minute mark** and the 2nd transmit at approximately the **7-minute mark** (leaving ~1 minute buffer before the 8-minute window closes).
 
-### Phase 1 — Wide Orbit, Coarse Fix (Minutes 0–4)
+### Phase 1: Wide Orbit, Coarse Fix (Minutes 0 to 4)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -141,31 +141,31 @@ The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to prog
 │          UAV flies a wide loitering orbit over the defined         │
 │          search area provided by GCS.                              │
 │                                                                    │
-│  T=0:00–4:00  Pi 5 streams sensor fusion data (bearing angles,     │
+│  T=0:00 to 4:00  Pi 5 streams sensor fusion data (bearing angles,  │
 │          GPS, signal metadata) via XBee down to the GCS laptop.    │
 │          The Kraken Triangulator receives this stream and          │
 │          continuously performs triangulation.                       │
 │                                                                    │
 │  T≈4:00  Kraken operator reviews the coarse estimate.              │
 │          Clicks TRANSMIT (1st time).                               │
-│          PURPOSE: Refine the loiter — tell the autonomy engine     │
+│          PURPOSE: Refine the loiter. Tell the autonomy engine      │
 │          where to center the tighter Phase 2 orbit.                │
 │                                                                    │
 │  ──► GCS Dashboard picks up coarse fix via GET /api/target         │
 │  ──► GCS Dashboard sends PatientLocation via XBee to Pi 5          │
-│  ──► Autonomy engine updates mission state → transitions to        │
+│  ──► Autonomy engine updates mission state, transitions to         │
 │      Phase 2 (tighter orbit at the coarse fix location)            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Phase 2 — Tight Orbit, Final Fix (Minutes 4–7)
+### Phase 2: Tight Orbit, Final Fix (Minutes 4 to 7)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  T≈4:00  Autonomy engine commands MRA to fly to the coarse fix     │
 │          location and begin a TIGHTER loitering orbit.             │
 │                                                                    │
-│  T=4:00–7:00  Pi 5 continues streaming sensor fusion data.         │
+│  T=4:00 to 7:00  Pi 5 continues streaming sensor fusion data.      │
 │          Kraken app now receives bearings from a closer vantage    │
 │          point with better geometric diversity around the target.  │
 │          Triangulation results improve (lower spread, more hits).  │
@@ -186,11 +186,11 @@ The MRA autonomy engine uses a **time-based, two-phase loiter strategy** to prog
 
 ### What This Means for GCS
 
-The GCS Dashboard's polling logic does **not** need to distinguish between the 1st and 2nd transmit — the API contract is identical for both. Each time the Kraken operator clicks TRANSMIT, a new `timestamp` appears on `GET /api/target`, and the Dashboard relays it to the Pi 5 via `PatientLocation`. The autonomy engine on the Pi 5 handles the phase transitions internally.
+The GCS Dashboard's polling logic does **not** need to distinguish between the 1st and 2nd transmit. The API contract is identical for both. Each time the Kraken operator clicks TRANSMIT, a new `timestamp` appears on `GET /api/target`, and the Dashboard relays it to the Pi 5 via `PatientLocation`. The autonomy engine on the Pi 5 handles the phase transitions internally.
 
 The GCS Dashboard should expect to receive **exactly two patient location updates** per mission:
-1. **1st update (~4 min)** — Coarse fix. Higher `spread_m`, fewer `count`. Refines the search orbit.
-2. **2nd update (~7 min)** — Final fix. Lower `spread_m`, higher `count`. This is the **official estimated survivor location** to relay to other vehicles.
+1. **1st update (~4 min):** Coarse fix. Higher `spread_m`, fewer `count`. Refines the search orbit.
+2. **2nd update (~7 min):** Final fix. Lower `spread_m`, higher `count`. This is the **official estimated survivor location** to relay to other vehicles.
 
 ---
 
@@ -258,19 +258,19 @@ On demo day, we envision **two operators working cooperatively** at the GCS stat
 | Pre-flight | 1 | Kraken operator launches `KrakenTriangulator.exe` and draws spatial filter over the defined search area | Kraken Op |
 | Pre-flight | 2 | Verify sensor fusion data stream is flowing (Kraken app shows incoming bearing data) | Kraken Op |
 | T=0:00 | 3 | MRA launches. **Start the stopwatch.** Autonomy engine begins Phase 1 wide orbit over search area | GCS Op / Kraken Op |
-| T=0:00–4:00 | 4 | Pi 5 streams sensor fusion data via XBee → Kraken app accumulates bearings and triangulation results | Automatic |
+| T=0:00 to 4:00 | 4 | Pi 5 streams sensor fusion data via XBee. Kraken app accumulates bearings and triangulation results | Automatic |
 | **T≈4:00** | **5** | **Kraken operator reviews coarse estimate and clicks TRANSMIT (1st time)**. Purpose: refine the search orbit. | **Kraken Op** |
 | T≈4:00 | 6 | GCS Dashboard picks up coarse fix, displays on map, relays PatientLocation to Pi 5 via XBee | Automatic |
 | T≈4:00 | 7 | Autonomy engine receives coarse fix, updates mission state, transitions to Phase 2 tight orbit | Automatic |
-| T=4:00–7:00 | 8 | Pi 5 streams fresh sensor fusion data from tighter orbit → Kraken app computes refined estimate | Automatic |
+| T=4:00 to 7:00 | 8 | Pi 5 streams fresh sensor fusion data from tighter orbit. Kraken app computes refined estimate | Automatic |
 | **T≈7:00** | **9** | **Kraken operator reviews refined estimate and clicks TRANSMIT (2nd time)**. Purpose: report **final estimated survivor location**. | **Kraken Op** |
 | T≈7:00 | 10 | GCS Dashboard picks up final fix, updates map, relays to Pi 5 and **other vehicles (e.g., ERU)** | Automatic / GCS Op |
 | T≈7:00 | 11 | Autonomy engine loiters at final estimated survivor location | Automatic |
-| T=8:00 | 12 | Search window closes | — |
+| T=8:00 | 12 | Search window closes | All |
 
-> ⏱️ **Stopwatch is critical.** The mission is time-boxed at 8 minutes. The Kraken operator needs to be aware of the 4-minute and 7-minute marks to ensure transmits happen on schedule. A simple phone stopwatch or timer is sufficient.
+> **Stopwatch is critical.** The mission is time-boxed at 8 minutes. The Kraken operator needs to be aware of the 4 minute and 7 minute marks to ensure transmits happen on schedule. A simple phone stopwatch or timer is sufficient.
 
-MRA Electrical & Software operators will be **present at the GCS station** to provide full operational guidance on the Kraken Triangulator app. The GCS team does not need to learn how to operate it — the GCS Dashboard only needs to read the target coordinates from the local API and display/relay them as described above.
+MRA Electrical & Software operators will be **present at the GCS station** to provide full operational guidance on the Kraken Triangulator app. The GCS team does not need to learn how to operate it. The GCS Dashboard only needs to read the target coordinates from the local API and display/relay them as described above.
 
 ---
 
@@ -293,7 +293,7 @@ MRA Electrical & Software operators will be **present at the GCS station** to pr
 We are happy to set up a joint integration test session whenever your team is ready. We can run both apps side-by-side and verify the full pipeline end-to-end:
 
 ```
-Kraken Triangulator → GCS Dashboard → XBee → Pi 5
+Kraken Triangulator > GCS Dashboard > XBee > Pi 5
 ```
 
 Reach out to MRA Electrical & Software to schedule a time.

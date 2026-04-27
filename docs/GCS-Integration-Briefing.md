@@ -37,7 +37,9 @@ The KrakenSDR antenna array on the UAV produces bearing data that is processed i
 
 The Pi 5 already transmits telemetry via XBee through `gcs_translator.py`. The sensor fusion data (bearing angles, GPS positions, signal metadata) must be included in this downlink so it arrives at the GCS laptop where the Kraken Triangulator is listening on `UDP port 5051`.
 
-**Important: XBee Serial to UDP Bridge.** Since the XBee appears as a serial (COM) port on the GCS laptop, the incoming bearing data needs to be forwarded from the serial port to UDP port 5051. **MRA will provide this bridge script** as part of the bundled installer. The GCS team does not need to build or maintain a serial-to-UDP forwarder. The bridge runs alongside the Kraken app and handles the conversion automatically.
+**Important: COM Port Ownership.** The GCS Dashboard already holds exclusive access to the XBee's serial (COM) port on the GCS laptop. Since only one process can own a serial port at a time on Windows, the GCS Dashboard is the only application that can read incoming XBee packets. **The GCS Dashboard must forward incoming bearing/sensor fusion packets to `localhost:5051` (UDP)** so the Kraken app can receive them. MRA cannot provide a separate bridge script because it would conflict with the GCS Dashboard's serial port access.
+
+In practice, this means when the GCS Dashboard reads a packet from the XBee serial stream and identifies it as bearing/sensor fusion data, it should forward that packet to `UDP localhost:5051`. The Kraken Triangulator is already configured to listen on that port.
 
 > **Without this data stream, the Kraken app has nothing to triangulate.** This is the input side of the pipeline.
 
@@ -284,7 +286,7 @@ MRA Electrical & Software operators will be **present at the GCS station** to pr
 
 | Owner | Task | Effort |
 |---|---|---|
-| **GCS Team** | Ensure Pi 5 sensor fusion data stream reaches GCS laptop via XBee (bearing data must arrive at Kraken app's UDP port 5051) | Verify existing pipeline |
+| **GCS Team** | Forward incoming bearing/sensor fusion packets from XBee serial stream to `UDP localhost:5051` for the Kraken app | ~10 lines (identify packet type, forward via UDP socket) |
 | **GCS Team** | Add polling of `GET localhost:5050/api/target` to GCS Dashboard | ~20 lines |
 | **GCS Team** | Display survivor location on GCS map when target received (expect 2 updates per mission) | Depends on existing map UI |
 | **GCS Team** | Send `PatientLocation` XBee command to Pi 5 when target received | ~3 lines (already in library) |
